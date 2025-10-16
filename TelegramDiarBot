@@ -1,0 +1,325 @@
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    ApplicationBuilder, CommandHandler, MessageHandler,
+    filters, CallbackQueryHandler, ContextTypes, ConversationHandler
+)
+import json
+import os
+from datetime import datetime, timedelta
+
+# --- Константи ---
+FILE = "homework.json"
+DAYS = ["Понеділок", "Вівторок", "Середа", "Четвер", "П’ятниця"]
+
+# --- Стан розмови ---
+SELECT_DAY, SELECT_SUBJECT, ADD_HOMEWORK = range(3)
+
+# --- Розклад уроків ---
+WEEK_SCHEDULE = {
+    "Понеділок": ["Мистецтво", "Укр. мова", "Укр. літ.", "Англ. мова", "Біологія", "Алгебра", "Інформатика"],
+    "Вівторок": ["Укр.мова", "Алгебра", "Фіз-ра", "Фізика", "Зар.літ.", "Геометрія", "Укр.літ"],
+    "Середа": ["Англ.мов", "Геометрія", "Укр.мов", "Укр.літ", "Історія України // Географія", "Громадянська", "Хімія"],
+    "Четвер": ["Інформатика // Мистецтво", "Біологія", "Історія України", "Фіз-ра", "Англ.мов", "Фізика", "Громадянська"],
+    "П’ятниця": ["Географія", "Фізика", "Укр.мова", "Укр.мова", "Фіз-ра", "Всесвітня Історія", "Хімія 05"]
+}
+
+# --- Завантаження/збереження ---
+def load_homework():
+    if not os.path.exists(FILE):
+        return {"homework": {}, "old_homework": {}, "last_month": datetime.now().month}
+    with open(FILE, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+def save_homework(data):
+    with open(FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+# --- Клавіатури ---
+def main_menu_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📚 Переглянути домашнє", callback_data="view_homework")],
+        [InlineKeyboardButton("➕ Додати домашнє", callback_data="add_homework")],
+        [InlineKeyboardButton("❌ Видалити домашнє", callback_data="delete_homework")],
+        [InlineKeyboardButton("📜 Старі домашні", callback_data="view_old_homework")],
+        [InlineKeyboardButton("📅 Розклад уроків", callback_data="view_schedule")]
+    ])
+
+def days_keyboard():
+    return InlineKeyboardMarkup([[InlineKeyboardButton(day, callback_data=f"day_{day}")] for day in DAYS])
+
+def subjects_keyboard(day):
+    subjects = WEEK_SCHEDULE.get(day, [])
+    if not subjects:
+        return InlineKeyboardMarkup([[InlineKeyboardButton("Немає уроків", callback_data="menu")]])
+    return InlineKeyboardMarkup([[InlineKeyboardButton(s, callback_data=f"subj_{s}")] for s in subjects])
+
+# --- Логіка дати ---
+def get_target_date(selected_day):
+    today = datetime.now()
+    current_day_index = today.weekday()  # 0 = понеділок, 6 = неділя
+    selected_index = DAYS.index(selected_day)
+    delta_days = selected_index - current_day_index
+    if delta_days <= 0:
+        delta_days += 7
+    target_date = today + timedelta(days=delta_days)
+    return target_date.strftime("%Y-%m-%d")
+
+def check_new_month():
+    data = load_homework()
+    current_month = datetime.now().month
+    last_month = data.get("last_month", current_month)
+    if current_month != last_month:
+        old_hw = data.get("old_homework", {})
+        for day, tasks in data.get("homework", {}).items():
+            old_hw[day] = tasks
+        data["homework"] = {}
+        data["old_homework"] = old_hw
+        data["last_month"] = current_month
+        save_homework(data)
+
+# --- Команди ---
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    check_new_month()
+    await update.message.reply_text(
+        "👋 Привіт! Я твій щоденник.\nВибери дію нижче:",
+        reply_markup=main_menu_keyboard()
+    )
+
+# --- Меню ---
+async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text("📋 Головне меню:", reply_markup=main_menu_keyboard())
+
+# --- Перегляд розкладу ---
+async def view_schedule_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    msg = "📅 <b>Розклад уроків</b>:\n\n"
+    for day in DAYS:
+        msg += f"📘 <b>{day}:</b>\n"
+        for subj in WEEK_SCHEDULE[day]:
+            msg += f"   • {subj}\n"
+        msg += "\n"
+    await query.edit_message_text(msg, reply_markup=main_menu_keyboard(), parse_mode="HTML")
+
+# --- Перегляд домашнього ---
+async def view_homework_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    check_new_month()
+    data = load_homework()
+    homework = data.get("homework", {})
+
+    if not homework:
+        msg = "📭 Немає жодного домашнього завдання."
+    else:
+        today = datetime.now().strftime("%Y-%m-%d")
+        msg = "📚 <b>Домашнє завдання</b>:\n\n"
+
+        current_week = []
+        next_week = []
+
+        for day in DAYS:
+            key_list = [k for k in homework.keys() if k.startswith(day)]
+            key_list.sort()
+            for key in key_list:
+                date_str = key.split("(")[1].strip(")")
+                if date_str >= today:
+                    current_week.append((key, homework[key]))
+                else:
+                    next_week.append((key, homework[key]))
+
+        for key, tasks in current_week + next_week:
+            msg += f"📅 <b>{key}</b>:\n"
+            for subj, hw in tasks.items():
+                msg += f"  ✏️ {subj}: {hw}\n"
+            msg += "\n"
+
+    await query.edit_message_text(msg, reply_markup=main_menu_keyboard(), parse_mode="HTML")
+
+# --- Перегляд старих домашніх ---
+async def view_old_homework_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = load_homework()
+    old_hw = data.get("old_homework", {})
+
+    if not old_hw:
+        msg = "📭 Немає старих домашніх завдань."
+    else:
+        msg = "📜 <b>Старі домашні завдання</b>:\n\n"
+        for day in DAYS:
+            for key, tasks in old_hw.items():
+                if key.startswith(day):
+                    msg += f"📅 <b>{key}</b>:\n"
+                    for subj, hw in tasks.items():
+                        msg += f"  ✏️ {subj}: {hw}\n"
+                    msg += "\n"
+
+    await query.edit_message_text(msg, reply_markup=main_menu_keyboard(), parse_mode="HTML")
+
+# --- Додавання домашнього ---
+async def add_homework_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text("📆 Обери день:", reply_markup=days_keyboard())
+    return SELECT_DAY
+
+async def select_day(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    day = query.data.replace("day_", "")
+    context.user_data["day"] = day
+    await query.edit_message_text(f"📚 Обери предмет для {day.lower()}:", reply_markup=subjects_keyboard(day))
+    return SELECT_SUBJECT
+
+async def select_subject(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    subject = query.data.replace("subj_", "")
+    context.user_data["subject"] = subject
+    await query.edit_message_text(f"✏️ Введи домашнє завдання з предмету '{subject}':")
+    return ADD_HOMEWORK
+
+async def save_homework_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+    day = context.user_data["day"]
+    subject = context.user_data["subject"]
+    data = load_homework()
+
+    target_date = get_target_date(day)
+    key = f"{day} ({target_date})"
+
+    if "homework" not in data:
+        data["homework"] = {}
+
+    if key not in data["homework"]:
+        data["homework"][key] = {}
+
+    data["homework"][key][subject] = text
+    save_homework(data)
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔍 Переглянути записане", callback_data="view_homework")],
+        [InlineKeyboardButton("🏠 Повернутись у меню", callback_data="menu")]
+    ])
+
+    await update.message.reply_text(
+        f"✅ Домашнє з '{subject}' на {day.lower()} записано!\n📅 Дата: {target_date}",
+        reply_markup=keyboard
+    )
+    return ConversationHandler.END
+
+# --- Видалення домашнього ---
+async def delete_homework_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = load_homework()
+    homework = data.get("homework", {})
+
+    if not homework:
+        await query.edit_message_text("📭 Немає нічого для видалення.", reply_markup=main_menu_keyboard())
+        return
+
+    keyboard = [[InlineKeyboardButton(day, callback_data=f"del_{day}")] for day in homework.keys()]
+    await query.edit_message_text("Оберіть день для видалення:", reply_markup=InlineKeyboardMarkup(keyboard))
+
+async def confirm_del_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    key = query.data.replace("del_", "")
+    data = load_homework()
+    homework = data.get("homework", {})
+
+    if key in homework:
+        del homework[key]
+        save_homework(data)
+        msg = f"✅ Домашнє для '{key}' видалено!"
+    else:
+        msg = "⚠️ Такого завдання не знайдено."
+
+    keyboard = [[InlineKeyboardButton("🏠 Повернутись у меню", callback_data="menu")]]
+    await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard))
+
+# --- Скасування ---
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("❌ Дію скасовано.", reply_markup=main_menu_keyboard())
+    return ConversationHandler.END
+
+# --- Основна функція ---
+def main():
+    application = ApplicationBuilder().token("8267646504:AAHqwL9cXPAa1djaW5xcqj0pfj03wAYKmpQ").build()
+
+    conv_handler = ConversationHandler(
+        entry_points=[CallbackQueryHandler(add_homework_callback, pattern="^add_homework$")],
+        states={
+            SELECT_DAY: [CallbackQueryHandler(select_day, pattern="^day_")],
+            SELECT_SUBJECT: [CallbackQueryHandler(select_subject, pattern="^subj_")],
+            ADD_HOMEWORK: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_homework_text)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
+
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(conv_handler)
+    application.add_handler(CallbackQueryHandler(view_homework_callback, pattern="^view_homework$"))
+    application.add_handler(CallbackQueryHandler(view_old_homework_callback, pattern="^view_old_homework$"))
+    application.add_handler(CallbackQueryHandler(delete_homework_callback, pattern="^delete_homework$"))
+    application.add_handler(CallbackQueryHandler(confirm_del_callback, pattern="^del_"))
+    application.add_handler(CallbackQueryHandler(menu_callback, pattern="^menu$"))
+    application.add_handler(CallbackQueryHandler(view_schedule_callback, pattern="^view_schedule$"))
+
+    print("🤖 Бот запущено!")
+    application.run_polling()
+
+if __name__ == "__main__":
+    main()
+{
+  "Вівторок": {
+    "Зарубіжна": "23 параграф"
+  },
+  "Четвер": {
+    "Інформатика": "5 параграф",
+    "Історія": "98 параграф, 7 параграф"
+  },
+  "Історія": {
+    "Історія": "5 параграф"
+  },
+  "Понеділок": {
+    "4": "Роо"
+  },
+  "П’ятниця (2025-10-17)": {
+    "Домашнє завдання": "Кароч туда сюда",
+    "Географія": "Кароч конспект"
+  },
+  "homework": {
+    "Четвер (2025-10-16)": {
+      "Історія України": "5 параграф вчить",
+      "Громадянська": "7 параграф вчить"
+    },
+    "П’ятниця (2025-10-17)": {
+      "Всесвітня Історія": "З 1 по 3 параграф буде залік"
+    },
+    "Середа (2025-10-22)": {
+      "Історія України // Географія": "Укр Історія 6 параграф вчить або це на четвер якщо буде географія",
+      "Історія": "Громадянська 8  параграф вчить"
+    }
+  }
+}
+{
+    "Математика": "Прочитати сторінки 10-15",
+    "Понеділок": {
+        "Математика": "Прочитати сторінки 10-15 /add 2025-10-14 Біологія Вивчити терміни"
+    },
+    "<Понеділок>": {
+        "<Матиматика>": "<Вивчити параграф>",
+        "<Інформатика>": "<Вивчити тупий параграф>"
+    },
+    "<14>": {
+        "<Інформатика>": "<Вивчити тупий параграф>"
+    },
+    "<пятниця>": {
+        "<математика>": "<читать парага>"
+    }
+}
