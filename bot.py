@@ -253,6 +253,7 @@ def main():
 
     application = ApplicationBuilder().token(TOKEN).build()
 
+    # --- ConversationHandler для додавання домашнього ---
     conv_handler = ConversationHandler(
         entry_points=[CallbackQueryHandler(add_homework_callback, pattern="^add_homework$")],
         states={
@@ -263,6 +264,7 @@ def main():
         fallbacks=[CommandHandler("cancel", cancel)],
     )
 
+    # --- Додаємо хендлери ---
     application.add_handler(CommandHandler("start", start))
     application.add_handler(conv_handler)
     application.add_handler(CallbackQueryHandler(view_homework_callback, pattern="^view_homework$"))
