@@ -10,8 +10,6 @@ from datetime import datetime, timedelta
 # --- Константи ---
 FILE = "homework.json"
 DAYS = ["Понеділок", "Вівторок", "Середа", "Четвер", "П’ятниця"]
-
-# --- Стан розмови ---
 SELECT_DAY, SELECT_SUBJECT, ADD_HOMEWORK = range(3)
 
 # --- Розклад уроків ---
@@ -56,7 +54,7 @@ def subjects_keyboard(day):
 # --- Логіка дати ---
 def get_target_date(selected_day):
     today = datetime.now()
-    current_day_index = today.weekday()  # 0 = понеділок, 6 = неділя
+    current_day_index = today.weekday()  # 0 = понеділок
     selected_index = DAYS.index(selected_day)
     delta_days = selected_index - current_day_index
     if delta_days <= 0:
@@ -249,7 +247,11 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # --- Основна функція ---
 def main():
-    application = ApplicationBuilder().token("8267646504:AAHqwL9cXPAa1djaW5xcqj0pfj03wAYKmpQ").build()
+    TOKEN = os.environ.get("BOT_TOKEN")
+    if not TOKEN:
+        raise ValueError("❌ BOT_TOKEN не знайдено в Environment Variables! Створи Secret у Render.")
+
+    application = ApplicationBuilder().token(TOKEN).build()
 
     conv_handler = ConversationHandler(
         entry_points=[CallbackQueryHandler(add_homework_callback, pattern="^add_homework$")],
